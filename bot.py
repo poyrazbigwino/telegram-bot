@@ -1,22 +1,9 @@
 """
 Telegram Bot - 3 Butonlu Menü + Yönetici Paneli
 ================================================
-Kullanıcı Akışı:
-- /start → 3 butonlu menü
-- 1) Güncel Giriş    → Direkt link açar (tıklama sayılır)
-- 2) Telegram Adresi → Direkt link açar (tıklama sayılır)
-- 3) Telegram Bonusu → Kanal üyeliği kontrolü → üyeyse metin gösterir
-
-Yönetici Komutları (sadece ADMIN_ID için):
-- /admin     → Yönetici paneli (istatistikler)
-- /broadcast → Tüm kullanıcılara mesaj gönder
-- /bonuslist → Bonus alan kişilerin listesi
-
-Kurulum:
-    pip install --upgrade python-telegram-bot
-
-Çalıştırma:
-    python bot.py
+Hassas bilgiler (token, kanal vs.) environment variable'lardan okunur.
+Yerel çalıştırma için: değişkenleri export et veya .env kullan.
+Render için: Render dashboard'unda Environment Variables ekle.
 """
 
 import logging
@@ -35,17 +22,15 @@ from telegram.ext import (
     filters,
 )
 
-# ====== AYARLAR ======
-BOT_TOKEN = "8897512295:AAFldX306gdnGLVY3qaoK98M2tN7IDqkras"
-CHANNEL_USERNAME = "@bigwinososyal"
-CHANNEL_LINK = "https://t.me/bigwinososyal"
+# ====== AYARLAR (Environment Variables) ======
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@kanalinizinkullaniciadi")
+CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/kanalinizinkullaniciadi")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "7961574063"))
 
-# Yönetici Telegram ID (sadece bu kullanıcı yönetici komutları kullanabilir)
-ADMIN_ID = 7961574063
-
-# Buton linkleri
-GUNCEL_GIRIS_LINK = "https://bwino.link/sosyal"
-TELEGRAM_ADRES_LINK = "https://t.me/bigwinososyal"
+# Buton linkleri (env'den okunur, yoksa varsayılan değer kullanılır)
+GUNCEL_GIRIS_LINK = os.environ.get("GUNCEL_GIRIS_LINK", "https://bwino.link/sosyal")
+TELEGRAM_ADRES_LINK = os.environ.get("TELEGRAM_ADRES_LINK", "https://t.me/bigwinososyal")
 
 # Bonus metni
 BONUS_TEXT = (
@@ -56,14 +41,12 @@ BONUS_TEXT = (
     "İyi şanslar! 🍀"
 )
 
-# Veri dosyaları
+# Veri dosyası
 STATS_FILE = "stats.json"
-# =====================
+# =============================================
 
-# Broadcast konuşma durumu
 WAITING_BROADCAST = 1
 
-# Loglama
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -74,7 +57,6 @@ logger = logging.getLogger(__name__)
 # ---------- Veri Yönetimi ----------
 
 def load_stats() -> dict:
-    """İstatistik dosyasını yükle"""
     if os.path.exists(STATS_FILE):
         try:
             with open(STATS_FILE, "r", encoding="utf-8") as f:
@@ -93,13 +75,11 @@ def load_stats() -> dict:
 
 
 def save_stats(stats: dict) -> None:
-    """İstatistik dosyasını kaydet"""
     with open(STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
 
 def register_user(user) -> None:
-    """Kullanıcıyı kaydet (yoksa)"""
     stats = load_stats()
     uid = str(user.id)
     if uid not in stats["users"]:
@@ -112,14 +92,12 @@ def register_user(user) -> None:
 
 
 def increment_click(button_name: str) -> None:
-    """Buton tıklama sayısını artır"""
     stats = load_stats()
     stats["button_clicks"][button_name] = stats["button_clicks"].get(button_name, 0) + 1
     save_stats(stats)
 
 
 def record_bonus(user) -> None:
-    """Bonus alan kişiyi kaydet"""
     stats = load_stats()
     uid = str(user.id)
     if uid not in stats["bonus_receivers"]:
@@ -134,7 +112,6 @@ def record_bonus(user) -> None:
 # ---------- Yardımcı Fonksiyonlar ----------
 
 async def is_user_in_channel(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    """Kullanıcının kanala üye olup olmadığını kontrol et"""
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         return member.status in [
@@ -148,22 +125,27 @@ async def is_user_in_channel(context: ContextTypes.DEFAULT_TYPE, user_id: int) -
 
 
 def is_admin(user_id: int) -> bool:
-    """Yönetici mi kontrolü"""
     return user_id == ADMIN_ID
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Ana menü - Güncel Giriş ve Telegram Adresi direkt link, Bonus kontrol gerektirir"""
     keyboard = [
-        [InlineKeyboardButton("🌐 Güncel Giriş", url=GUNCEL_GIRIS_LINK)],
-        [InlineKeyboardButton("📱 Telegram Adresi", url=TELEGRAM_ADRES_LINK)],
+        [InlineKeyboardButton("🌐 Güncel Giriş", callback_data="guncel_giris")],
+        [InlineKeyboardButton("📱 Telegram Adresi", callback_data="telegram_adresi")],
         [InlineKeyboardButton("🎁 Telegram Bonusu", callback_data="bonus")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
+def link_keyboard(url: str, label: str) -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton(label, url=url)],
+        [InlineKeyboardButton("⬅️ Ana Menü", callback_data="main_menu")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 def join_channel_keyboard() -> InlineKeyboardMarkup:
-    """Kanala katıl + tekrar dene butonları"""
     keyboard = [
         [InlineKeyboardButton("📢 Kanala Katıl", url=CHANNEL_LINK)],
         [InlineKeyboardButton("✅ Üyeliğimi Kontrol Et", callback_data="bonus")],
@@ -173,7 +155,6 @@ def join_channel_keyboard() -> InlineKeyboardMarkup:
 
 
 def back_keyboard() -> InlineKeyboardMarkup:
-    """Sadece ana menüye dönüş butonu"""
     keyboard = [[InlineKeyboardButton("⬅️ Ana Menü", callback_data="main_menu")]]
     return InlineKeyboardMarkup(keyboard)
 
@@ -181,13 +162,8 @@ def back_keyboard() -> InlineKeyboardMarkup:
 # ---------- Kullanıcı Komutları ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/start - ana menüyü göster (her tıklamada güncel giriş ve telegram adresi sayısı +1)"""
     user = update.effective_user
     register_user(user)
-
-    # /start her açıldığında menü gösterildiği için sayım start'a basıldığı anda
-    # (Not: URL butonları için tıklama sayısını tam yakalayamayız, bu yüzden
-    # /start sayısını "menü görüntülenmesi" olarak takip ediyoruz)
 
     welcome_text = (
         f"👋 Merhaba {user.first_name}!\n\n"
@@ -200,13 +176,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Buton tıklamalarını işle (sadece callback_data olan butonlar için)"""
     query = update.callback_query
     await query.answer()
     user = query.from_user
     register_user(user)
 
-    # Ana menüye dönüş
     if query.data == "main_menu":
         await query.edit_message_text(
             f"👋 Merhaba {user.first_name}!\n\n"
@@ -215,7 +189,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Bonus - kanal kontrolü
+    if query.data == "guncel_giris":
+        increment_click("guncel_giris")
+        await query.edit_message_text(
+            "🌐 *Güncel Giriş*\n\n"
+            "Aşağıdaki butona tıklayarak siteye gidebilirsin:",
+            reply_markup=link_keyboard(GUNCEL_GIRIS_LINK, "🔗 Siteye Git"),
+            parse_mode="Markdown",
+        )
+        return
+
+    if query.data == "telegram_adresi":
+        increment_click("telegram_adresi")
+        await query.edit_message_text(
+            "📱 *Telegram Adresi*\n\n"
+            "Aşağıdaki butona tıklayarak Telegram kanalına gidebilirsin:",
+            reply_markup=link_keyboard(TELEGRAM_ADRES_LINK, "🔗 Kanala Git"),
+            parse_mode="Markdown",
+        )
+        return
+
     if query.data == "bonus":
         increment_click("bonus")
         is_member = await is_user_in_channel(context, user.id)
@@ -231,7 +224,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-        # Üyeyse bonus metnini göster ve kaydet
         record_bonus(user)
         await query.edit_message_text(
             BONUS_TEXT,
@@ -243,7 +235,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ---------- Yönetici Komutları ----------
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/admin - yönetici paneli istatistikleri"""
     user = update.effective_user
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
@@ -258,9 +249,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "🛠️ *YÖNETİCİ PANELİ*\n\n"
         f"👥 *Toplam Kullanıcı:* {total_users}\n"
         f"🎁 *Bonus Alan:* {total_bonus}\n\n"
-        f"📊 *Buton İstatistikleri:*\n"
-        f"  🎁 Telegram Bonusu Tıklama: {clicks.get('bonus', 0)}\n\n"
-        f"_(Not: Güncel Giriş ve Telegram Adresi direkt link açan butonlar olduğu için Telegram bunların tıklamasını botlara bildirmez.)_\n\n"
+        f"📊 *Buton Tıklamaları:*\n"
+        f"  🌐 Güncel Giriş: {clicks.get('guncel_giris', 0)}\n"
+        f"  📱 Telegram Adresi: {clicks.get('telegram_adresi', 0)}\n"
+        f"  🎁 Telegram Bonusu: {clicks.get('bonus', 0)}\n\n"
         f"📋 *Komutlar:*\n"
         f"/bonuslist - Bonus alanların listesi\n"
         f"/broadcast - Tüm kullanıcılara mesaj gönder"
@@ -269,7 +261,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/bonuslist - bonus alan kişilerin listesi"""
     user = update.effective_user
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
@@ -309,7 +300,6 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """/broadcast - toplu mesaj başlat"""
     user = update.effective_user
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
@@ -325,7 +315,6 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Mesajı tüm kullanıcılara gönder"""
     message_text = update.message.text
     stats = load_stats()
     users = stats["users"]
@@ -355,7 +344,6 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Broadcast iptal"""
     await update.message.reply_text("❌ Toplu mesaj iptal edildi.")
     return ConversationHandler.END
 
@@ -363,7 +351,10 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------- Ana Fonksiyon ----------
 
 def main() -> None:
-    """Botu çalıştır"""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable'i ayarlanmamış!")
+        raise SystemExit("BOT_TOKEN bulunamadı. Lütfen environment variable olarak ekleyin.")
+
     application = Application.builder().token(BOT_TOKEN).build()
 
     broadcast_conv = ConversationHandler(
