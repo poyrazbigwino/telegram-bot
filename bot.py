@@ -1,15 +1,20 @@
 """
-Telegram Bot - 3 Butonlu Menü + Yönetici Paneli
-================================================
-Hassas bilgiler (token, kanal vs.) environment variable'lardan okunur.
-Yerel çalıştırma için: değişkenleri export et veya .env kullan.
-Render için: Render dashboard'unda Environment Variables ekle.
+Telegram Bot - Web Service Modu (Render Ücretsiz Uyumlu)
+=========================================================
+Bot normal işini yapar + aynı zamanda küçük bir web sunucusu açar
+(Render bunu "Web Service" sanır ve ücretsiz çalıştırır).
+
+UptimeRobot ile web sayfası 5 dakikada bir ping'lenirse bot 7/24 ayakta kalır.
 """
 
 import logging
 import json
 import os
+import asyncio
 from datetime import datetime
+from threading import Thread
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus
 from telegram.ext import (
@@ -27,10 +32,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@kanalinizinkullaniciadi")
 CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/kanalinizinkullaniciadi")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "7961574063"))
-
-# Buton linkleri (env'den okunur, yoksa varsayılan değer kullanılır)
 GUNCEL_GIRIS_LINK = os.environ.get("GUNCEL_GIRIS_LINK", "https://bwino.link/sosyal")
 TELEGRAM_ADRES_LINK = os.environ.get("TELEGRAM_ADRES_LINK", "https://t.me/bigwinososyal")
+
+# Render PORT'u otomatik veriyor
+PORT = int(os.environ.get("PORT", "10000"))
 
 # Bonus metni
 BONUS_TEXT = (
@@ -41,7 +47,6 @@ BONUS_TEXT = (
     "İyi şanslar! 🍀"
 )
 
-# Veri dosyası
 STATS_FILE = "stats.json"
 # =============================================
 
@@ -164,15 +169,11 @@ def back_keyboard() -> InlineKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     register_user(user)
-
     welcome_text = (
         f"👋 Merhaba {user.first_name}!\n\n"
         f"Aşağıdaki menüden istediğin seçeneğe tıklayabilirsin:"
     )
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=main_menu_keyboard(),
-    )
+    await update.message.reply_text(welcome_text, reply_markup=main_menu_keyboard())
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -212,7 +213,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if query.data == "bonus":
         increment_click("bonus")
         is_member = await is_user_in_channel(context, user.id)
-
         if not is_member:
             await query.edit_message_text(
                 "❌ *Bonus alabilmek için önce kanalımıza katılman gerekiyor!*\n\n"
@@ -268,7 +268,6 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     stats = load_stats()
     receivers = stats["bonus_receivers"]
-
     if not receivers:
         await update.message.reply_text("📭 Henüz bonus alan kimse yok.")
         return
@@ -281,7 +280,6 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append(f"{i}. {name} - {username}\n   ID: `{uid}` - {date}")
 
     full_text = "\n".join(lines)
-
     if len(full_text) > 4000:
         chunks = []
         current = ""
@@ -318,13 +316,11 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message_text = update.message.text
     stats = load_stats()
     users = stats["users"]
-
     if not users:
         await update.message.reply_text("📭 Gönderilecek kullanıcı yok.")
         return ConversationHandler.END
 
     await update.message.reply_text(f"⏳ {len(users)} kullanıcıya mesaj gönderiliyor...")
-
     success = 0
     failed = 0
     for uid in users.keys():
@@ -348,6 +344,40 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
+# ---------- Web Server (UptimeRobot için) ----------
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Basit HTTP sunucusu - UptimeRobot'un ping atması için"""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Bot Status</title></head>
+        <body style="font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: #fff;">
+            <h1>🤖 Telegram Bot</h1>
+            <p style="color: #4CAF50; font-size: 24px;">✅ Çalışıyor</p>
+            <p>Bot 7/24 aktif durumda.</p>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode("utf-8"))
+
+    def log_message(self, format, *args):
+        # Web logları gereksiz, sadece bot logları görünsün
+        return
+
+
+def run_web_server():
+    """Web sunucusunu ayrı bir thread'de çalıştır"""
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    logger.info(f"Web sunucusu {PORT} portunda başladı")
+    server.serve_forever()
+
+
 # ---------- Ana Fonksiyon ----------
 
 def main() -> None:
@@ -355,6 +385,11 @@ def main() -> None:
         logger.error("BOT_TOKEN environment variable'i ayarlanmamış!")
         raise SystemExit("BOT_TOKEN bulunamadı. Lütfen environment variable olarak ekleyin.")
 
+    # Web sunucusunu ayrı thread'de başlat
+    web_thread = Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+
+    # Telegram botu başlat
     application = Application.builder().token(BOT_TOKEN).build()
 
     broadcast_conv = ConversationHandler(
