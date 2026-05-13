@@ -1,16 +1,14 @@
 """
-Telegram Bot - Web Service Modu (Render Ücretsiz Uyumlu)
-=========================================================
-Bot normal işini yapar + aynı zamanda küçük bir web sunucusu açar
-(Render bunu "Web Service" sanır ve ücretsiz çalıştırır).
-
-UptimeRobot ile web sayfası 5 dakikada bir ping'lenirse bot 7/24 ayakta kalır.
+Telegram Bot - Tek Aşamalı Sürüm + Yönetici Paneli
+====================================================
+- Güncel Giriş    → Direkt link açar
+- Telegram Adresi → Direkt link açar
+- Telegram Bonusu → Kanal kontrolü → üyeyse bonus metni
 """
 
 import logging
 import json
 import os
-import asyncio
 from datetime import datetime
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -35,10 +33,8 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "7961574063"))
 GUNCEL_GIRIS_LINK = os.environ.get("GUNCEL_GIRIS_LINK", "https://bwino.link/sosyal")
 TELEGRAM_ADRES_LINK = os.environ.get("TELEGRAM_ADRES_LINK", "https://t.me/bigwinososyal")
 
-# Render PORT'u otomatik veriyor
 PORT = int(os.environ.get("PORT", "10000"))
 
-# Bonus metni
 BONUS_TEXT = (
     "🎁 *TELEGRAM BONUSU* 🎁\n\n"
     "Tebrikler! Kanal üyeliğin doğrulandı.\n\n"
@@ -70,11 +66,7 @@ def load_stats() -> dict:
             pass
     return {
         "users": {},
-        "button_clicks": {
-            "guncel_giris": 0,
-            "telegram_adresi": 0,
-            "bonus": 0,
-        },
+        "button_clicks": {"bonus": 0},
         "bonus_receivers": {},
     }
 
@@ -134,18 +126,11 @@ def is_admin(user_id: int) -> bool:
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Ana menü - Güncel Giriş ve Telegram Adresi direkt link, Bonus kontrol gerektirir"""
     keyboard = [
-        [InlineKeyboardButton("🌐 Güncel Giriş", callback_data="guncel_giris")],
-        [InlineKeyboardButton("📱 Telegram Adresi", callback_data="telegram_adresi")],
+        [InlineKeyboardButton("🌐 Güncel Giriş", url=GUNCEL_GIRIS_LINK)],
+        [InlineKeyboardButton("📱 Telegram Adresi", url=TELEGRAM_ADRES_LINK)],
         [InlineKeyboardButton("🎁 Telegram Bonusu", callback_data="bonus")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def link_keyboard(url: str, label: str) -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton(label, url=url)],
-        [InlineKeyboardButton("⬅️ Ana Menü", callback_data="main_menu")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -190,29 +175,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    if query.data == "guncel_giris":
-        increment_click("guncel_giris")
-        await query.edit_message_text(
-            "🌐 *Güncel Giriş*\n\n"
-            "Aşağıdaki butona tıklayarak siteye gidebilirsin:",
-            reply_markup=link_keyboard(GUNCEL_GIRIS_LINK, "🔗 Siteye Git"),
-            parse_mode="Markdown",
-        )
-        return
-
-    if query.data == "telegram_adresi":
-        increment_click("telegram_adresi")
-        await query.edit_message_text(
-            "📱 *Telegram Adresi*\n\n"
-            "Aşağıdaki butona tıklayarak Telegram kanalına gidebilirsin:",
-            reply_markup=link_keyboard(TELEGRAM_ADRES_LINK, "🔗 Kanala Git"),
-            parse_mode="Markdown",
-        )
-        return
-
     if query.data == "bonus":
         increment_click("bonus")
         is_member = await is_user_in_channel(context, user.id)
+
         if not is_member:
             await query.edit_message_text(
                 "❌ *Bonus alabilmek için önce kanalımıza katılman gerekiyor!*\n\n"
@@ -249,10 +215,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "🛠️ *YÖNETİCİ PANELİ*\n\n"
         f"👥 *Toplam Kullanıcı:* {total_users}\n"
         f"🎁 *Bonus Alan:* {total_bonus}\n\n"
-        f"📊 *Buton Tıklamaları:*\n"
-        f"  🌐 Güncel Giriş: {clicks.get('guncel_giris', 0)}\n"
-        f"  📱 Telegram Adresi: {clicks.get('telegram_adresi', 0)}\n"
-        f"  🎁 Telegram Bonusu: {clicks.get('bonus', 0)}\n\n"
+        f"📊 *Bonus Buton Tıklaması:* {clicks.get('bonus', 0)}\n\n"
+        f"_(Not: Güncel Giriş ve Telegram Adresi direkt link açan butonlar olduğu için tıklamaları sayılamıyor.)_\n\n"
         f"📋 *Komutlar:*\n"
         f"/bonuslist - Bonus alanların listesi\n"
         f"/broadcast - Tüm kullanıcılara mesaj gönder"
@@ -347,8 +311,6 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------- Web Server (UptimeRobot için) ----------
 
 class HealthHandler(BaseHTTPRequestHandler):
-    """Basit HTTP sunucusu - UptimeRobot'un ping atması için"""
-
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
@@ -367,12 +329,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(html.encode("utf-8"))
 
     def log_message(self, format, *args):
-        # Web logları gereksiz, sadece bot logları görünsün
         return
 
 
 def run_web_server():
-    """Web sunucusunu ayrı bir thread'de çalıştır"""
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     logger.info(f"Web sunucusu {PORT} portunda başladı")
     server.serve_forever()
@@ -383,13 +343,11 @@ def run_web_server():
 def main() -> None:
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN environment variable'i ayarlanmamış!")
-        raise SystemExit("BOT_TOKEN bulunamadı. Lütfen environment variable olarak ekleyin.")
+        raise SystemExit("BOT_TOKEN bulunamadı.")
 
-    # Web sunucusunu ayrı thread'de başlat
     web_thread = Thread(target=run_web_server, daemon=True)
     web_thread.start()
 
-    # Telegram botu başlat
     application = Application.builder().token(BOT_TOKEN).build()
 
     broadcast_conv = ConversationHandler(
@@ -408,7 +366,7 @@ def main() -> None:
     application.add_handler(CommandHandler("bonuslist", bonus_list))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    logger.info("Bot başlatıldı. Durdurmak için Ctrl+C basın.")
+    logger.info("Bot başlatıldı.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
