@@ -1,20 +1,17 @@
 """
-Telegram Bot - Tek Aşamalı Sürüm + Yönetici Paneli
-====================================================
-- Güncel Giriş    → Direkt link açar
-- Telegram Adresi → Direkt link açar
-- Telegram Bonusu → Kanal kontrolü → üyeyse bonus metni
-
-Web sunucusu hem GET hem HEAD isteklerine cevap verir (UptimeRobot uyumlu).
+Telegram Bot - Supabase Veritabanlı Sürüm
+==========================================
+Veriler artık Supabase'de kalıcı olarak saklanıyor.
+Render yeniden başlasa bile veriler kaybolmaz.
 """
 
 import logging
-import json
 import os
 from datetime import datetime
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from supabase import create_client, Client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus
 from telegram.ext import (
@@ -35,6 +32,10 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "7961574063"))
 GUNCEL_GIRIS_LINK = os.environ.get("GUNCEL_GIRIS_LINK", "https://bwino.link/sosyal")
 TELEGRAM_ADRES_LINK = os.environ.get("TELEGRAM_ADRES_LINK", "https://t.me/bigwinososyal")
 
+# Supabase ayarları
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+
 PORT = int(os.environ.get("PORT", "10000"))
 
 BONUS_TEXT = (
@@ -44,8 +45,6 @@ BONUS_TEXT = (
     "Bu kodu sitemizdeki bonus alanına girerek bonusunu talep edebilirsin.\n\n"
     "İyi şanslar! 🍀"
 )
-
-STATS_FILE = "stats.json"
 # =============================================
 
 WAITING_BROADCAST = 1
@@ -56,56 +55,117 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ---------- Veri Yönetimi ----------
-
-def load_stats() -> dict:
-    if os.path.exists(STATS_FILE):
-        try:
-            with open(STATS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
-    return {
-        "users": {},
-        "button_clicks": {"bonus": 0},
-        "bonus_receivers": {},
-    }
+# Supabase client başlat
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Supabase bağlantısı kuruldu.")
+    except Exception as e:
+        logger.error(f"Supabase bağlantı hatası: {e}")
 
 
-def save_stats(stats: dict) -> None:
-    with open(STATS_FILE, "w", encoding="utf-8") as f:
-        json.dump(stats, f, ensure_ascii=False, indent=2)
-
+# ---------- Veritabanı Fonksiyonları ----------
 
 def register_user(user) -> None:
-    stats = load_stats()
-    uid = str(user.id)
-    if uid not in stats["users"]:
-        stats["users"][uid] = {
+    """Kullanıcıyı veritabanına kaydet (varsa atla)"""
+    if not supabase:
+        return
+    try:
+        # upsert: varsa güncelle, yoksa ekle
+        supabase.table("users").upsert({
+            "user_id": user.id,
             "first_name": user.first_name or "",
             "username": user.username or "",
-            "joined_at": datetime.now().isoformat(),
-        }
-        save_stats(stats)
+        }, on_conflict="user_id", ignore_duplicates=True).execute()
+    except Exception as e:
+        logger.error(f"Kullanıcı kaydı hatası: {e}")
 
 
 def increment_click(button_name: str) -> None:
-    stats = load_stats()
-    stats["button_clicks"][button_name] = stats["button_clicks"].get(button_name, 0) + 1
-    save_stats(stats)
+    """Buton tıklama sayısını artır"""
+    if not supabase:
+        return
+    try:
+        # Mevcut değeri al
+        result = supabase.table("button_clicks").select("click_count").eq("button_name", button_name).execute()
+        current = result.data[0]["click_count"] if result.data else 0
+        # Güncelle
+        supabase.table("button_clicks").upsert({
+            "button_name": button_name,
+            "click_count": current + 1,
+        }, on_conflict="button_name").execute()
+    except Exception as e:
+        logger.error(f"Click sayısı artırma hatası: {e}")
 
 
 def record_bonus(user) -> None:
-    stats = load_stats()
-    uid = str(user.id)
-    if uid not in stats["bonus_receivers"]:
-        stats["bonus_receivers"][uid] = {
+    """Bonus alan kişiyi kaydet"""
+    if not supabase:
+        return
+    try:
+        supabase.table("bonus_receivers").upsert({
+            "user_id": user.id,
             "first_name": user.first_name or "",
             "username": user.username or "",
-            "received_at": datetime.now().isoformat(),
-        }
-        save_stats(stats)
+        }, on_conflict="user_id", ignore_duplicates=True).execute()
+    except Exception as e:
+        logger.error(f"Bonus kaydı hatası: {e}")
+
+
+def get_total_users() -> int:
+    if not supabase:
+        return 0
+    try:
+        result = supabase.table("users").select("user_id", count="exact").execute()
+        return result.count or 0
+    except Exception as e:
+        logger.error(f"Kullanıcı sayısı alma hatası: {e}")
+        return 0
+
+
+def get_total_bonus() -> int:
+    if not supabase:
+        return 0
+    try:
+        result = supabase.table("bonus_receivers").select("user_id", count="exact").execute()
+        return result.count or 0
+    except Exception as e:
+        logger.error(f"Bonus sayısı alma hatası: {e}")
+        return 0
+
+
+def get_button_clicks() -> dict:
+    if not supabase:
+        return {}
+    try:
+        result = supabase.table("button_clicks").select("*").execute()
+        return {row["button_name"]: row["click_count"] for row in (result.data or [])}
+    except Exception as e:
+        logger.error(f"Click sayıları alma hatası: {e}")
+        return {}
+
+
+def get_all_bonus_receivers() -> list:
+    if not supabase:
+        return []
+    try:
+        result = supabase.table("bonus_receivers").select("*").order("received_at").execute()
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Bonus listesi alma hatası: {e}")
+        return []
+
+
+def get_all_user_ids() -> list:
+    if not supabase:
+        return []
+    try:
+        result = supabase.table("users").select("user_id").execute()
+        return [row["user_id"] for row in (result.data or [])]
+    except Exception as e:
+        logger.error(f"Kullanıcı listesi alma hatası: {e}")
+        return []
 
 
 # ---------- Yardımcı Fonksiyonlar ----------
@@ -207,10 +267,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
         return
 
-    stats = load_stats()
-    total_users = len(stats["users"])
-    total_bonus = len(stats["bonus_receivers"])
-    clicks = stats["button_clicks"]
+    total_users = get_total_users()
+    total_bonus = get_total_bonus()
+    clicks = get_button_clicks()
 
     text = (
         "🛠️ *YÖNETİCİ PANELİ*\n\n"
@@ -231,17 +290,17 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
         return
 
-    stats = load_stats()
-    receivers = stats["bonus_receivers"]
+    receivers = get_all_bonus_receivers()
     if not receivers:
         await update.message.reply_text("📭 Henüz bonus alan kimse yok.")
         return
 
     lines = [f"🎁 *BONUS ALAN KİŞİLER ({len(receivers)} kişi)*\n"]
-    for i, (uid, info) in enumerate(receivers.items(), 1):
-        name = info.get("first_name", "?")
+    for i, info in enumerate(receivers, 1):
+        name = info.get("first_name") or "?"
         username = f"@{info['username']}" if info.get("username") else "(kullanıcı adı yok)"
-        date = info.get("received_at", "")[:10]
+        date = (info.get("received_at") or "")[:10]
+        uid = info.get("user_id", "")
         lines.append(f"{i}. {name} - {username}\n   ID: `{uid}` - {date}")
 
     full_text = "\n".join(lines)
@@ -279,16 +338,16 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message_text = update.message.text
-    stats = load_stats()
-    users = stats["users"]
-    if not users:
+    user_ids = get_all_user_ids()
+
+    if not user_ids:
         await update.message.reply_text("📭 Gönderilecek kullanıcı yok.")
         return ConversationHandler.END
 
-    await update.message.reply_text(f"⏳ {len(users)} kullanıcıya mesaj gönderiliyor...")
+    await update.message.reply_text(f"⏳ {len(user_ids)} kullanıcıya mesaj gönderiliyor...")
     success = 0
     failed = 0
-    for uid in users.keys():
+    for uid in user_ids:
         try:
             await context.bot.send_message(chat_id=int(uid), text=message_text)
             success += 1
@@ -309,7 +368,7 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
-# ---------- Web Server (UptimeRobot için - GET ve HEAD destekli) ----------
+# ---------- Web Server (UptimeRobot için) ----------
 
 HEALTH_HTML = """<!DOCTYPE html>
 <html>
@@ -324,8 +383,6 @@ HEALTH_HTML = """<!DOCTYPE html>
 
 
 class HealthHandler(BaseHTTPRequestHandler):
-    """HTTP sunucusu - hem GET hem HEAD desteklenir"""
-
     def _send_headers(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
@@ -337,7 +394,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(HEALTH_HTML.encode("utf-8"))
 
     def do_HEAD(self):
-        # HEAD isteği: sadece header gönder, içerik gönderme (UptimeRobot için)
         self._send_headers()
 
     def log_message(self, format, *args):
@@ -356,6 +412,9 @@ def main() -> None:
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN environment variable'i ayarlanmamış!")
         raise SystemExit("BOT_TOKEN bulunamadı.")
+
+    if not supabase:
+        logger.warning("⚠️ Supabase bağlantısı yok! Veriler saklanamayacak.")
 
     web_thread = Thread(target=run_web_server, daemon=True)
     web_thread.start()
