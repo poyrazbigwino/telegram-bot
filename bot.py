@@ -4,6 +4,8 @@ Telegram Bot - Tek Aşamalı Sürüm + Yönetici Paneli
 - Güncel Giriş    → Direkt link açar
 - Telegram Adresi → Direkt link açar
 - Telegram Bonusu → Kanal kontrolü → üyeyse bonus metni
+
+Web sunucusu hem GET hem HEAD isteklerine cevap verir (UptimeRobot uyumlu).
 """
 
 import logging
@@ -126,7 +128,6 @@ def is_admin(user_id: int) -> bool:
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Ana menü - Güncel Giriş ve Telegram Adresi direkt link, Bonus kontrol gerektirir"""
     keyboard = [
         [InlineKeyboardButton("🌐 Güncel Giriş", url=GUNCEL_GIRIS_LINK)],
         [InlineKeyboardButton("📱 Telegram Adresi", url=TELEGRAM_ADRES_LINK)],
@@ -308,25 +309,36 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
-# ---------- Web Server (UptimeRobot için) ----------
+# ---------- Web Server (UptimeRobot için - GET ve HEAD destekli) ----------
+
+HEALTH_HTML = """<!DOCTYPE html>
+<html>
+<head><title>Bot Status</title></head>
+<body style="font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: #fff;">
+    <h1>🤖 Telegram Bot</h1>
+    <p style="color: #4CAF50; font-size: 24px;">✅ Çalışıyor</p>
+    <p>Bot 7/24 aktif durumda.</p>
+</body>
+</html>
+"""
+
 
 class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    """HTTP sunucusu - hem GET hem HEAD desteklenir"""
+
+    def _send_headers(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(HEALTH_HTML.encode("utf-8"))))
         self.end_headers()
-        html = """
-        <!DOCTYPE html>
-        <html>
-        <head><title>Bot Status</title></head>
-        <body style="font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: #fff;">
-            <h1>🤖 Telegram Bot</h1>
-            <p style="color: #4CAF50; font-size: 24px;">✅ Çalışıyor</p>
-            <p>Bot 7/24 aktif durumda.</p>
-        </body>
-        </html>
-        """
-        self.wfile.write(html.encode("utf-8"))
+
+    def do_GET(self):
+        self._send_headers()
+        self.wfile.write(HEALTH_HTML.encode("utf-8"))
+
+    def do_HEAD(self):
+        # HEAD isteği: sadece header gönder, içerik gönderme (UptimeRobot için)
+        self._send_headers()
 
     def log_message(self, format, *args):
         return
