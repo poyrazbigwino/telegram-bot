@@ -1,13 +1,17 @@
 """
-Telegram Bot - Supabase Veritabanlı Sürüm
-==========================================
-Veriler artık Supabase'de kalıcı olarak saklanıyor.
-Render yeniden başlasa bile veriler kaybolmaz.
+Telegram Bot - Supabase + Site Kullanıcı Adı
+=============================================
+Özellikler:
+- 3 butonlu menü (Güncel Giriş / Telegram Adresi / Telegram Bonusu)
+- Bonus için kanal üyeliği kontrolü
+- Bonus için site kullanıcı adı talebi
+- Veriler Supabase'de kalıcı
+- Admin'e anlık bildirim
 """
 
 import logging
 import os
-from datetime import datetime
+import re
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -24,7 +28,7 @@ from telegram.ext import (
     filters,
 )
 
-# ====== AYARLAR (Environment Variables) ======
+# ====== AYARLAR ======
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@kanalinizinkullaniciadi")
 CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/kanalinizinkullaniciadi")
@@ -32,7 +36,6 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "7961574063"))
 GUNCEL_GIRIS_LINK = os.environ.get("GUNCEL_GIRIS_LINK", "https://bwino.link/sosyal")
 TELEGRAM_ADRES_LINK = os.environ.get("TELEGRAM_ADRES_LINK", "https://t.me/bigwinososyal")
 
-# Supabase ayarları
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
@@ -40,14 +43,16 @@ PORT = int(os.environ.get("PORT", "10000"))
 
 BONUS_TEXT = (
     "🎁 *TELEGRAM BONUSU* 🎁\n\n"
-    "Tebrikler! Kanal üyeliğin doğrulandı.\n\n"
+    "Tebrikler! Bonus talebin alındı.\n\n"
     "🎟️ *Bonus Kodu:* `BIGWIN2026`\n\n"
     "Bu kodu sitemizdeki bonus alanına girerek bonusunu talep edebilirsin.\n\n"
     "İyi şanslar! 🍀"
 )
-# =============================================
+# =====================
 
+# Konuşma durumları
 WAITING_BROADCAST = 1
+WAITING_USERNAME = 2
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -55,7 +60,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Supabase client başlat
+# Supabase client
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -68,11 +73,9 @@ if SUPABASE_URL and SUPABASE_KEY:
 # ---------- Veritabanı Fonksiyonları ----------
 
 def register_user(user) -> None:
-    """Kullanıcıyı veritabanına kaydet (varsa atla)"""
     if not supabase:
         return
     try:
-        # upsert: varsa güncelle, yoksa ekle
         supabase.table("users").upsert({
             "user_id": user.id,
             "first_name": user.first_name or "",
@@ -83,14 +86,11 @@ def register_user(user) -> None:
 
 
 def increment_click(button_name: str) -> None:
-    """Buton tıklama sayısını artır"""
     if not supabase:
         return
     try:
-        # Mevcut değeri al
         result = supabase.table("button_clicks").select("click_count").eq("button_name", button_name).execute()
         current = result.data[0]["click_count"] if result.data else 0
-        # Güncelle
         supabase.table("button_clicks").upsert({
             "button_name": button_name,
             "click_count": current + 1,
@@ -99,8 +99,20 @@ def increment_click(button_name: str) -> None:
         logger.error(f"Click sayısı artırma hatası: {e}")
 
 
-def record_bonus(user) -> None:
-    """Bonus alan kişiyi kaydet"""
+def get_bonus_receiver(user_id: int) -> dict:
+    """Kullanıcının bonus kaydını getir (varsa)"""
+    if not supabase:
+        return None
+    try:
+        result = supabase.table("bonus_receivers").select("*").eq("user_id", user_id).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.error(f"Bonus kaydı sorgulama hatası: {e}")
+        return None
+
+
+def save_bonus(user, site_username: str) -> None:
+    """Bonus talebini ve site kullanıcı adını kaydet"""
     if not supabase:
         return
     try:
@@ -108,7 +120,8 @@ def record_bonus(user) -> None:
             "user_id": user.id,
             "first_name": user.first_name or "",
             "username": user.username or "",
-        }, on_conflict="user_id", ignore_duplicates=True).execute()
+            "site_username": site_username,
+        }, on_conflict="user_id").execute()
     except Exception as e:
         logger.error(f"Bonus kaydı hatası: {e}")
 
@@ -119,8 +132,7 @@ def get_total_users() -> int:
     try:
         result = supabase.table("users").select("user_id", count="exact").execute()
         return result.count or 0
-    except Exception as e:
-        logger.error(f"Kullanıcı sayısı alma hatası: {e}")
+    except Exception:
         return 0
 
 
@@ -130,8 +142,7 @@ def get_total_bonus() -> int:
     try:
         result = supabase.table("bonus_receivers").select("user_id", count="exact").execute()
         return result.count or 0
-    except Exception as e:
-        logger.error(f"Bonus sayısı alma hatası: {e}")
+    except Exception:
         return 0
 
 
@@ -141,8 +152,7 @@ def get_button_clicks() -> dict:
     try:
         result = supabase.table("button_clicks").select("*").execute()
         return {row["button_name"]: row["click_count"] for row in (result.data or [])}
-    except Exception as e:
-        logger.error(f"Click sayıları alma hatası: {e}")
+    except Exception:
         return {}
 
 
@@ -152,8 +162,7 @@ def get_all_bonus_receivers() -> list:
     try:
         result = supabase.table("bonus_receivers").select("*").order("received_at").execute()
         return result.data or []
-    except Exception as e:
-        logger.error(f"Bonus listesi alma hatası: {e}")
+    except Exception:
         return []
 
 
@@ -163,8 +172,7 @@ def get_all_user_ids() -> list:
     try:
         result = supabase.table("users").select("user_id").execute()
         return [row["user_id"] for row in (result.data or [])]
-    except Exception as e:
-        logger.error(f"Kullanıcı listesi alma hatası: {e}")
+    except Exception:
         return []
 
 
@@ -185,6 +193,11 @@ async def is_user_in_channel(context: ContextTypes.DEFAULT_TYPE, user_id: int) -
 
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
+
+
+def is_valid_username(name: str) -> bool:
+    """3-32 karakter, sadece harf ve rakam"""
+    return bool(re.fullmatch(r"[A-Za-z0-9]{3,32}", name))
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -210,9 +223,37 @@ def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def existing_username_keyboard() -> InlineKeyboardMarkup:
+    """Mevcut kayıtlı kullanıcı için: bonusu al veya kullanıcı adını değiştir"""
+    keyboard = [
+        [InlineKeyboardButton("✅ Bu Kullanıcı Adıyla Devam Et", callback_data="use_existing_username")],
+        [InlineKeyboardButton("✏️ Kullanıcı Adını Değiştir", callback_data="change_username")],
+        [InlineKeyboardButton("⬅️ Ana Menü", callback_data="main_menu")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ---------- Admin Bildirim ----------
+
+async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user, site_username: str) -> None:
+    """Admin'e bonus alındığını anlık bildir"""
+    try:
+        tg_username = f"@{user.username}" if user.username else "(yok)"
+        text = (
+            "🔔 *Yeni Bonus Talebi*\n\n"
+            f"👤 *Ad:* {user.first_name or '-'}\n"
+            f"📱 *Telegram:* {tg_username}\n"
+            f"🆔 *Telegram ID:* `{user.id}`\n"
+            f"🎮 *Site Kullanıcı Adı:* `{site_username}`"
+        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Admin bildirimi hatası: {e}")
+
+
 # ---------- Kullanıcı Komutları ----------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     register_user(user)
     welcome_text = (
@@ -220,22 +261,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Aşağıdaki menüden istediğin seçeneğe tıklayabilirsin:"
     )
     await update.message.reply_text(welcome_text, reply_markup=main_menu_keyboard())
+    return ConversationHandler.END
 
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Buton tıklamalarını işle. Kullanıcı adı isteme durumuna geçebilir."""
     query = update.callback_query
     await query.answer()
     user = query.from_user
     register_user(user)
 
+    # Ana menüye dönüş
     if query.data == "main_menu":
         await query.edit_message_text(
             f"👋 Merhaba {user.first_name}!\n\n"
             f"Aşağıdaki menüden istediğin seçeneğe tıklayabilirsin:",
             reply_markup=main_menu_keyboard(),
         )
-        return
+        return ConversationHandler.END
 
+    # Bonus butonu
     if query.data == "bonus":
         increment_click("bonus")
         is_member = await is_user_in_channel(context, user.id)
@@ -249,14 +294,104 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 reply_markup=join_channel_keyboard(),
                 parse_mode="Markdown",
             )
-            return
+            return ConversationHandler.END
 
-        record_bonus(user)
+        # Üye - mevcut kayıt var mı?
+        existing = get_bonus_receiver(user.id)
+        if existing and existing.get("site_username"):
+            # Eskiden kaydolmuş, soruyoruz
+            await query.edit_message_text(
+                f"✅ Kanal üyeliğin doğrulandı!\n\n"
+                f"🎮 Daha önce kaydettiğin site kullanıcı adı:\n"
+                f"`{existing['site_username']}`\n\n"
+                f"Bu kullanıcı adıyla devam etmek mi yoksa değiştirmek mi istersin?",
+                reply_markup=existing_username_keyboard(),
+                parse_mode="Markdown",
+            )
+            return ConversationHandler.END
+
+        # Yeni kullanıcı - site adını sor
         await query.edit_message_text(
-            BONUS_TEXT,
+            "✅ Kanal üyeliğin doğrulandı!\n\n"
+            "🎮 *Lütfen site kullanıcı adını yaz:*\n\n"
+            "_(3-32 karakter, sadece harf ve rakam)_\n"
+            "_İptal için /cancel yaz._",
+            parse_mode="Markdown",
+        )
+        return WAITING_USERNAME
+
+    # Mevcut kullanıcı adıyla devam
+    if query.data == "use_existing_username":
+        existing = get_bonus_receiver(user.id)
+        site_username = existing.get("site_username", "") if existing else ""
+
+        # Bonus metnini göster
+        await query.edit_message_text(
+            BONUS_TEXT + f"\n\n🎮 *Kayıtlı Site Kullanıcı Adın:* `{site_username}`",
             reply_markup=back_keyboard(),
             parse_mode="Markdown",
         )
+        # Admin'e bildir
+        await notify_admin(context, user, site_username)
+        return ConversationHandler.END
+
+    # Kullanıcı adını değiştir
+    if query.data == "change_username":
+        await query.edit_message_text(
+            "🎮 *Yeni site kullanıcı adını yaz:*\n\n"
+            "_(3-32 karakter, sadece harf ve rakam)_\n"
+            "_İptal için /cancel yaz._",
+            parse_mode="Markdown",
+        )
+        return WAITING_USERNAME
+
+    return ConversationHandler.END
+
+
+async def receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Kullanıcı site adını yazdığında işle"""
+    user = update.effective_user
+    site_username = update.message.text.strip()
+
+    if not is_valid_username(site_username):
+        await update.message.reply_text(
+            "⚠️ Geçersiz kullanıcı adı.\n\n"
+            "Kullanıcı adı *3-32 karakter* uzunluğunda olmalı ve sadece *harf veya rakam* içermelidir.\n\n"
+            "Lütfen tekrar dene veya /cancel ile iptal et.",
+            parse_mode="Markdown",
+        )
+        return WAITING_USERNAME
+
+    # Üyelik son kontrol (güvenlik)
+    is_member = await is_user_in_channel(context, user.id)
+    if not is_member:
+        await update.message.reply_text(
+            "❌ Kanal üyeliğin artık geçerli değil. Lütfen /start yazarak tekrar başla.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    # Kaydet
+    save_bonus(user, site_username)
+
+    # Bonus metnini gönder
+    await update.message.reply_text(
+        BONUS_TEXT + f"\n\n🎮 *Kayıtlı Site Kullanıcı Adın:* `{site_username}`",
+        reply_markup=back_keyboard(),
+        parse_mode="Markdown",
+    )
+
+    # Admin'e anlık bildirim
+    await notify_admin(context, user, site_username)
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "❌ İşlem iptal edildi.",
+        reply_markup=main_menu_keyboard(),
+    )
+    return ConversationHandler.END
 
 
 # ---------- Yönetici Komutları ----------
@@ -276,7 +411,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"👥 *Toplam Kullanıcı:* {total_users}\n"
         f"🎁 *Bonus Alan:* {total_bonus}\n\n"
         f"📊 *Bonus Buton Tıklaması:* {clicks.get('bonus', 0)}\n\n"
-        f"_(Not: Güncel Giriş ve Telegram Adresi direkt link açan butonlar olduğu için tıklamaları sayılamıyor.)_\n\n"
         f"📋 *Komutlar:*\n"
         f"/bonuslist - Bonus alanların listesi\n"
         f"/broadcast - Tüm kullanıcılara mesaj gönder"
@@ -298,12 +432,18 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lines = [f"🎁 *BONUS ALAN KİŞİLER ({len(receivers)} kişi)*\n"]
     for i, info in enumerate(receivers, 1):
         name = info.get("first_name") or "?"
-        username = f"@{info['username']}" if info.get("username") else "(kullanıcı adı yok)"
+        tg_username = f"@{info['username']}" if info.get("username") else "(yok)"
+        site_username = info.get("site_username") or "(yok)"
         date = (info.get("received_at") or "")[:10]
         uid = info.get("user_id", "")
-        lines.append(f"{i}. {name} - {username}\n   ID: `{uid}` - {date}")
+        lines.append(
+            f"{i}. {name}\n"
+            f"   📱 TG: {tg_username}\n"
+            f"   🎮 Site: `{site_username}`\n"
+            f"   🆔 `{uid}` - {date}"
+        )
 
-    full_text = "\n".join(lines)
+    full_text = "\n\n".join(lines)
     if len(full_text) > 4000:
         chunks = []
         current = ""
@@ -312,7 +452,7 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 chunks.append(current)
                 current = line
             else:
-                current += "\n" + line if current else line
+                current += "\n\n" + line if current else line
         if current:
             chunks.append(current)
         for chunk in chunks:
@@ -368,7 +508,7 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
-# ---------- Web Server (UptimeRobot için) ----------
+# ---------- Web Server ----------
 
 HEALTH_HTML = """<!DOCTYPE html>
 <html>
@@ -421,6 +561,22 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Ana kullanıcı akışı (start + butonlar + kullanıcı adı isteme)
+    main_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(button_handler),
+        ],
+        states={
+            WAITING_USERNAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_username),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
+    )
+
+    # Broadcast akışı
     broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast_start)],
         states={
@@ -432,10 +588,9 @@ def main() -> None:
     )
 
     application.add_handler(broadcast_conv)
-    application.add_handler(CommandHandler("start", start))
+    application.add_handler(main_conv)
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("bonuslist", bonus_list))
-    application.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("Bot başlatıldı.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
