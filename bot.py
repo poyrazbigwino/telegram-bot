@@ -44,7 +44,7 @@ PORT = int(os.environ.get("PORT", "10000"))
 BONUS_TEXT = (
     "🎁 *TELEGRAM BONUSU* 🎁\n\n"
     "Tebrikler! Bonus talebin alındı.\n\n"
-    "🎟️ *Bonus Kodu:* `BIGWIN2026`\n\n"
+    "🎟️ *Bonus Kodu:* `winoTG05RDx`\n\n"
     "Bu kodu sitemizdeki bonus alanına girerek bonusunu talep edebilirsin.\n\n"
     "İyi şanslar! 🍀"
 )
