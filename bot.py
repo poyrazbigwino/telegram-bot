@@ -506,7 +506,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"📊 *Bonus Buton Tıklaması:* {clicks.get('bonus', 0)}\n"
         f"📡 *Log Grubu:* {log_status}\n\n"
         f"📋 *Komutlar:*\n"
-        f"/bonuslist - Bonus alanların listesi\n\n"
+        f"/bonuslist - Bonus alanların listesi\n"
+        f"/sendlogall - Tüm bonus alanları log grubuna gönder\n\n"
         f"📢 *Mesajlaşma:*\n"
         f"/broadcast - Tüm kullanıcılara mesaj\n"
         f"/bonusbroadcast - Sadece bonus alanlara mesaj\n"
@@ -557,6 +558,68 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await update.message.reply_text(chunk, parse_mode="Markdown")
     else:
         await update.message.reply_text(full_text, parse_mode="Markdown")
+
+
+# ---------- /sendlogall: Tüm bonus alanları log grubuna gönder ----------
+
+async def send_log_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Mevcut tüm bonus alanları tek seferlik log grubuna gönder"""
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
+        return
+
+    if not LOG_CHAT_ID:
+        await update.message.reply_text(
+            "⚠️ Log grubu/kanalı tanımlı değil.\n\n"
+            "Render'da `LOG_CHAT_ID` environment variable'ını ayarla."
+        )
+        return
+
+    receivers = get_all_bonus_receivers()
+    if not receivers:
+        await update.message.reply_text("📭 Henüz bonus alan kimse yok.")
+        return
+
+    await update.message.reply_text(
+        f"⏳ {len(receivers)} bonus kaydı log grubuna gönderiliyor..."
+    )
+
+    success = 0
+    failed = 0
+
+    for i, info in enumerate(receivers):
+        site_username = info.get("site_username") or "(yok)"
+        received_at = info.get("received_at") or ""
+
+        # Tarihi Türkiye saatine çevir
+        try:
+            dt_utc = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+            tz_tr = timezone(timedelta(hours=3))
+            dt_tr = dt_utc.astimezone(tz_tr)
+            tarih_str = dt_tr.strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            tarih_str = received_at[:16] if received_at else "?"
+
+        text = f"🔔 Telegram Bonus Talebi - {site_username} - {tarih_str}"
+
+        try:
+            await context.bot.send_message(chat_id=int(LOG_CHAT_ID), text=text)
+            success += 1
+        except Exception as e:
+            failed += 1
+            logger.warning(f"Log gönderilemedi ({site_username}): {e}")
+
+        # Rate limit koruması: her 25 mesajda 1 saniye bekle
+        if (i + 1) % 25 == 0:
+            await asyncio.sleep(1)
+
+    await update.message.reply_text(
+        f"✅ *Tamamlandı!*\n\n"
+        f"✔️ Gönderilen: {success}\n"
+        f"❌ Hata: {failed}",
+        parse_mode="Markdown",
+    )
 
 
 # ---------- /broadcast ----------
@@ -847,6 +910,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("bonuslist", bonus_list))
+    application.add_handler(CommandHandler("sendlogall", send_log_all))
     application.add_handler(CommandHandler("sitebroadcast", site_broadcast))
 
     logger.info("Bot başlatıldı.")
