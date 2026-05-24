@@ -1,17 +1,22 @@
 """
-Telegram Bot - Supabase + Site Kullanıcı Adı
-=============================================
-Özellikler:
-- 3 butonlu menü (Güncel Giriş / Telegram Adresi / Telegram Bonusu)
-- Bonus için kanal üyeliği kontrolü
-- Bonus için site kullanıcı adı talebi
-- Veriler Supabase'de kalıcı
-- Admin'e anlık bildirim
+Telegram Bot - Tam Sürüm (Supabase + Mesajlaşma Sistemi)
+==========================================================
+Komutlar:
+  Kullanıcı: /start, /cancel
+  Admin:
+    /admin            - İstatistikler
+    /bonuslist        - Bonus alanlar listesi
+    /broadcast        - Tüm kullanıcılara mesaj
+    /bonusbroadcast   - Sadece bonus alanlara mesaj
+    /sitebroadcast    - Belirli site adına özel mesaj
+    /filterbroadcast  - Son X gün filtreli mesaj
 """
 
+import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -46,6 +51,8 @@ BONUS_TEXT = (
     "Tebrikler! Bonus talebin alındı.\n\n"
     "🎟️ *Bonus Kodu:* `winoTG05RDx`\n\n"
     "Bu kodu sitemizdeki bonus alanına girerek bonusunu talep edebilirsin.\n\n"
+    "Uyarı: Bota kaydettiğiniz kullanıcı adı ve site üyeliğimiz karşılaştırılacaktır. Sorun yaşamamak için doğru kullanıcı adını kaydettiğinizden emin olun."
+    
     "İyi şanslar! 🍀"
 )
 # =====================
@@ -53,6 +60,9 @@ BONUS_TEXT = (
 # Konuşma durumları
 WAITING_BROADCAST = 1
 WAITING_USERNAME = 2
+WAITING_BONUS_BROADCAST = 3
+WAITING_FILTER_DAYS = 4
+WAITING_FILTER_BROADCAST = 5
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -60,7 +70,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Supabase client
+# Supabase
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -100,7 +110,6 @@ def increment_click(button_name: str) -> None:
 
 
 def get_bonus_receiver(user_id: int) -> dict:
-    """Kullanıcının bonus kaydını getir (varsa)"""
     if not supabase:
         return None
     try:
@@ -112,7 +121,6 @@ def get_bonus_receiver(user_id: int) -> dict:
 
 
 def save_bonus(user, site_username: str) -> None:
-    """Bonus talebini ve site kullanıcı adını kaydet"""
     if not supabase:
         return
     try:
@@ -176,6 +184,55 @@ def get_all_user_ids() -> list:
         return []
 
 
+def get_bonus_user_ids() -> list:
+    """Sadece bonus almış kullanıcıların ID'leri"""
+    if not supabase:
+        return []
+    try:
+        result = supabase.table("bonus_receivers").select("user_id").execute()
+        return [row["user_id"] for row in (result.data or [])]
+    except Exception:
+        return []
+
+
+def find_user_by_site_username(site_username: str) -> dict:
+    """Site kullanıcı adına göre kayıt bul (case-insensitive)"""
+    if not supabase:
+        return None
+    try:
+        result = supabase.table("bonus_receivers").select("*").ilike("site_username", site_username).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.error(f"Site kullanıcı sorgulama hatası: {e}")
+        return None
+
+
+def get_user_ids_joined_in_last_days(days: int) -> list:
+    """Son X gün içinde katılanların ID'leri"""
+    if not supabase:
+        return []
+    try:
+        threshold = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        result = supabase.table("users").select("user_id").gte("joined_at", threshold).execute()
+        return [row["user_id"] for row in (result.data or [])]
+    except Exception as e:
+        logger.error(f"Filtre hatası: {e}")
+        return []
+
+
+def get_user_ids_NOT_joined_in_last_days(days: int) -> list:
+    """Son X gündür GELMEMİŞ (daha önce katılmış) kullanıcılar"""
+    if not supabase:
+        return []
+    try:
+        threshold = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        result = supabase.table("users").select("user_id").lt("joined_at", threshold).execute()
+        return [row["user_id"] for row in (result.data or [])]
+    except Exception as e:
+        logger.error(f"Filtre hatası: {e}")
+        return []
+
+
 # ---------- Yardımcı Fonksiyonlar ----------
 
 async def is_user_in_channel(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
@@ -196,7 +253,6 @@ def is_admin(user_id: int) -> bool:
 
 
 def is_valid_username(name: str) -> bool:
-    """3-32 karakter, sadece harf ve rakam"""
     return bool(re.fullmatch(r"[A-Za-z0-9]{3,32}", name))
 
 
@@ -224,7 +280,6 @@ def back_keyboard() -> InlineKeyboardMarkup:
 
 
 def existing_username_keyboard() -> InlineKeyboardMarkup:
-    """Mevcut kayıtlı kullanıcı için: bonusu al veya kullanıcı adını değiştir"""
     keyboard = [
         [InlineKeyboardButton("✅ Bu Kullanıcı Adıyla Devam Et", callback_data="use_existing_username")],
         [InlineKeyboardButton("✏️ Kullanıcı Adını Değiştir", callback_data="change_username")],
@@ -233,10 +288,18 @@ def existing_username_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def filter_choice_keyboard() -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton("🆕 Son X günde katılanlar", callback_data="filter_new")],
+        [InlineKeyboardButton("😴 Son X gündür gelmeyenler", callback_data="filter_inactive")],
+        [InlineKeyboardButton("❌ İptal", callback_data="filter_cancel")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 # ---------- Admin Bildirim ----------
 
 async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user, site_username: str) -> None:
-    """Admin'e bonus alındığını anlık bildir"""
     try:
         tg_username = f"@{user.username}" if user.username else "(yok)"
         text = (
@@ -249,6 +312,49 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user, site_username: 
         await context.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Admin bildirimi hatası: {e}")
+
+
+# ---------- Toplu Mesaj Gönderim Yardımcı ----------
+
+async def send_broadcast(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_ids: list,
+    message_text: str,
+    notify_message,
+) -> None:
+    """Verilen kullanıcı listesine mesaj gönder, ilerleme göster"""
+    if not user_ids:
+        await notify_message.reply_text("📭 Gönderilecek kullanıcı yok.")
+        return
+
+    await notify_message.reply_text(f"⏳ {len(user_ids)} kullanıcıya mesaj gönderiliyor...")
+    success = 0
+    failed = 0
+    blocked = 0
+
+    for i, uid in enumerate(user_ids):
+        try:
+            await context.bot.send_message(chat_id=int(uid), text=message_text)
+            success += 1
+        except Exception as e:
+            err_str = str(e).lower()
+            if "blocked" in err_str or "deactivated" in err_str:
+                blocked += 1
+            else:
+                failed += 1
+            logger.warning(f"Mesaj gönderilemedi ({uid}): {e}")
+
+        # Telegram rate limit: ~30 mesaj/sn, biz güvenli tarafta kalmak için 25/sn yapalım
+        if (i + 1) % 25 == 0:
+            await asyncio.sleep(1)
+
+    await notify_message.reply_text(
+        f"✅ *Toplu mesaj tamamlandı!*\n\n"
+        f"✔️ Başarılı: {success}\n"
+        f"🚫 Engellenen: {blocked}\n"
+        f"❌ Diğer hata: {failed}",
+        parse_mode="Markdown",
+    )
 
 
 # ---------- Kullanıcı Komutları ----------
@@ -265,13 +371,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Buton tıklamalarını işle. Kullanıcı adı isteme durumuna geçebilir."""
     query = update.callback_query
     await query.answer()
     user = query.from_user
     register_user(user)
 
-    # Ana menüye dönüş
     if query.data == "main_menu":
         await query.edit_message_text(
             f"👋 Merhaba {user.first_name}!\n\n"
@@ -280,7 +384,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return ConversationHandler.END
 
-    # Bonus butonu
     if query.data == "bonus":
         increment_click("bonus")
         is_member = await is_user_in_channel(context, user.id)
@@ -296,10 +399,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return ConversationHandler.END
 
-        # Üye - mevcut kayıt var mı?
         existing = get_bonus_receiver(user.id)
         if existing and existing.get("site_username"):
-            # Eskiden kaydolmuş, soruyoruz
             await query.edit_message_text(
                 f"✅ Kanal üyeliğin doğrulandı!\n\n"
                 f"🎮 Daha önce kaydettiğin site kullanıcı adı:\n"
@@ -310,7 +411,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return ConversationHandler.END
 
-        # Yeni kullanıcı - site adını sor
         await query.edit_message_text(
             "✅ Kanal üyeliğin doğrulandı!\n\n"
             "🎮 *Lütfen site kullanıcı adını yaz:*\n\n"
@@ -320,22 +420,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return WAITING_USERNAME
 
-    # Mevcut kullanıcı adıyla devam
     if query.data == "use_existing_username":
         existing = get_bonus_receiver(user.id)
         site_username = existing.get("site_username", "") if existing else ""
-
-        # Bonus metnini göster
         await query.edit_message_text(
             BONUS_TEXT + f"\n\n🎮 *Kayıtlı Site Kullanıcı Adın:* `{site_username}`",
             reply_markup=back_keyboard(),
             parse_mode="Markdown",
         )
-        # Admin'e bildir
         await notify_admin(context, user, site_username)
         return ConversationHandler.END
 
-    # Kullanıcı adını değiştir
     if query.data == "change_username":
         await query.edit_message_text(
             "🎮 *Yeni site kullanıcı adını yaz:*\n\n"
@@ -349,7 +444,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Kullanıcı site adını yazdığında işle"""
     user = update.effective_user
     site_username = update.message.text.strip()
 
@@ -362,7 +456,6 @@ async def receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return WAITING_USERNAME
 
-    # Üyelik son kontrol (güvenlik)
     is_member = await is_user_in_channel(context, user.id)
     if not is_member:
         await update.message.reply_text(
@@ -371,17 +464,12 @@ async def receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return ConversationHandler.END
 
-    # Kaydet
     save_bonus(user, site_username)
-
-    # Bonus metnini gönder
     await update.message.reply_text(
         BONUS_TEXT + f"\n\n🎮 *Kayıtlı Site Kullanıcı Adın:* `{site_username}`",
         reply_markup=back_keyboard(),
         parse_mode="Markdown",
     )
-
-    # Admin'e anlık bildirim
     await notify_admin(context, user, site_username)
     return ConversationHandler.END
 
@@ -394,7 +482,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-# ---------- Yönetici Komutları ----------
+# ---------- Yönetici Komutları (İstatistik & Liste) ----------
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -412,8 +500,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"🎁 *Bonus Alan:* {total_bonus}\n\n"
         f"📊 *Bonus Buton Tıklaması:* {clicks.get('bonus', 0)}\n\n"
         f"📋 *Komutlar:*\n"
-        f"/bonuslist - Bonus alanların listesi\n"
-        f"/broadcast - Tüm kullanıcılara mesaj gönder"
+        f"/bonuslist - Bonus alanların listesi\n\n"
+        f"📢 *Mesajlaşma:*\n"
+        f"/broadcast - Tüm kullanıcılara mesaj\n"
+        f"/bonusbroadcast - Sadece bonus alanlara mesaj\n"
+        f"/sitebroadcast - Belirli site adına özel mesaj\n"
+        f"/filterbroadcast - Filtreli mesaj"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -461,6 +553,8 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(full_text, parse_mode="Markdown")
 
 
+# ---------- /broadcast: Tüm kullanıcılar ----------
+
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     if not is_admin(user.id):
@@ -468,7 +562,7 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "📢 *Toplu Mesaj Gönderme*\n\n"
+        "📢 *Toplu Mesaj — TÜM KULLANICILAR*\n\n"
         "Tüm kullanıcılara göndermek istediğin mesajı yaz.\n"
         "İptal için /cancel yaz.",
         parse_mode="Markdown",
@@ -477,29 +571,168 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    message_text = update.message.text
     user_ids = get_all_user_ids()
+    await send_broadcast(context, user_ids, update.message.text, update.message)
+    return ConversationHandler.END
 
-    if not user_ids:
-        await update.message.reply_text("📭 Gönderilecek kullanıcı yok.")
+
+# ---------- /bonusbroadcast: Sadece bonus alanlar ----------
+
+async def bonus_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
         return ConversationHandler.END
 
-    await update.message.reply_text(f"⏳ {len(user_ids)} kullanıcıya mesaj gönderiliyor...")
-    success = 0
-    failed = 0
-    for uid in user_ids:
-        try:
-            await context.bot.send_message(chat_id=int(uid), text=message_text)
-            success += 1
-        except Exception as e:
-            logger.warning(f"Mesaj gönderilemedi ({uid}): {e}")
-            failed += 1
+    total = len(get_bonus_user_ids())
+    await update.message.reply_text(
+        f"🎁 *Toplu Mesaj — BONUS ALANLAR* ({total} kişi)\n\n"
+        f"Bonus alan kişilere göndermek istediğin mesajı yaz.\n"
+        f"İptal için /cancel yaz.",
+        parse_mode="Markdown",
+    )
+    return WAITING_BONUS_BROADCAST
+
+
+async def bonus_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_ids = get_bonus_user_ids()
+    await send_broadcast(context, user_ids, update.message.text, update.message)
+    return ConversationHandler.END
+
+
+# ---------- /sitebroadcast: Belirli site adına özel mesaj ----------
+
+async def site_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
+        return
+
+    # Kullanım: /sitebroadcast siteadi mesaj metni buraya
+    text = update.message.text or ""
+    parts = text.split(maxsplit=2)
+
+    if len(parts) < 3:
+        await update.message.reply_text(
+            "📝 *Kullanım:*\n"
+            "`/sitebroadcast siteadi Mesaj metni buraya`\n\n"
+            "*Örnek:*\n"
+            "`/sitebroadcast ahmet123 Bonusunuz onaylandı, sitemize bekleriz!`",
+            parse_mode="Markdown",
+        )
+        return
+
+    site_username = parts[1]
+    message_text = parts[2]
+
+    record = find_user_by_site_username(site_username)
+    if not record:
+        await update.message.reply_text(
+            f"❌ `{site_username}` adında bir kullanıcı bulunamadı.",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        await context.bot.send_message(chat_id=int(record["user_id"]), text=message_text)
+        await update.message.reply_text(
+            f"✅ Mesaj gönderildi!\n\n"
+            f"👤 *Alıcı:* {record.get('first_name', '?')}\n"
+            f"🎮 *Site Adı:* `{site_username}`\n"
+            f"🆔 *TG ID:* `{record['user_id']}`",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Mesaj gönderilemedi: {e}\n\n"
+            f"(Kullanıcı botu engellemiş veya hesabını silmiş olabilir.)"
+        )
+
+
+# ---------- /filterbroadcast: Filtreli ----------
+
+async def filter_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
+        return ConversationHandler.END
 
     await update.message.reply_text(
-        f"✅ Toplu mesaj tamamlandı!\n\n"
-        f"✔️ Başarılı: {success}\n"
-        f"❌ Başarısız: {failed}"
+        "🎯 *Filtreli Mesaj*\n\n"
+        "Hangi gruba göndermek istersin?",
+        reply_markup=filter_choice_keyboard(),
+        parse_mode="Markdown",
     )
+    return WAITING_FILTER_DAYS
+
+
+async def filter_choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "filter_cancel":
+        await query.edit_message_text("❌ İptal edildi.")
+        return ConversationHandler.END
+
+    if query.data == "filter_new":
+        context.user_data["filter_mode"] = "new"
+        await query.edit_message_text(
+            "🆕 *Son X günde katılanlar*\n\n"
+            "Kaç günü hedeflemek istersin? (Sayı yaz)\n"
+            "Örnek: `7` = son 7 gün\n\n"
+            "İptal için /cancel yaz.",
+            parse_mode="Markdown",
+        )
+        return WAITING_FILTER_DAYS
+
+    if query.data == "filter_inactive":
+        context.user_data["filter_mode"] = "inactive"
+        await query.edit_message_text(
+            "😴 *Son X gündür gelmeyenler*\n\n"
+            "Kaç günden eski olmalı? (Sayı yaz)\n"
+            "Örnek: `7` = 7 gün önce ve daha eski tarihte katılanlar\n\n"
+            "İptal için /cancel yaz.",
+            parse_mode="Markdown",
+        )
+        return WAITING_FILTER_DAYS
+
+    return ConversationHandler.END
+
+
+async def filter_days_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+    if not text.isdigit():
+        await update.message.reply_text("⚠️ Lütfen sadece bir sayı yaz (örnek: 7).")
+        return WAITING_FILTER_DAYS
+
+    days = int(text)
+    if days < 1 or days > 365:
+        await update.message.reply_text("⚠️ 1-365 arası bir sayı gir.")
+        return WAITING_FILTER_DAYS
+
+    mode = context.user_data.get("filter_mode", "new")
+    if mode == "new":
+        user_ids = get_user_ids_joined_in_last_days(days)
+        label = f"son {days} günde katılan"
+    else:
+        user_ids = get_user_ids_NOT_joined_in_last_days(days)
+        label = f"{days} gün önce ve daha eski katılan"
+
+    context.user_data["filter_user_ids"] = user_ids
+    await update.message.reply_text(
+        f"🎯 *Hedef:* {len(user_ids)} kullanıcı ({label})\n\n"
+        f"Göndermek istediğin mesajı yaz.\n"
+        f"İptal için /cancel yaz.",
+        parse_mode="Markdown",
+    )
+    return WAITING_FILTER_BROADCAST
+
+
+async def filter_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_ids = context.user_data.get("filter_user_ids", [])
+    await send_broadcast(context, user_ids, update.message.text, update.message)
+    context.user_data.pop("filter_user_ids", None)
+    context.user_data.pop("filter_mode", None)
     return ConversationHandler.END
 
 
@@ -561,7 +794,7 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Ana kullanıcı akışı (start + butonlar + kullanıcı adı isteme)
+    # Kullanıcı akışı (start + bonus)
     main_conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -576,7 +809,7 @@ def main() -> None:
         per_message=False,
     )
 
-    # Broadcast akışı
+    # /broadcast
     broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast_start)],
         states={
@@ -587,10 +820,40 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", broadcast_cancel)],
     )
 
+    # /bonusbroadcast
+    bonus_broadcast_conv = ConversationHandler(
+        entry_points=[CommandHandler("bonusbroadcast", bonus_broadcast_start)],
+        states={
+            WAITING_BONUS_BROADCAST: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_broadcast_send)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", broadcast_cancel)],
+    )
+
+    # /filterbroadcast
+    filter_broadcast_conv = ConversationHandler(
+        entry_points=[CommandHandler("filterbroadcast", filter_broadcast_start)],
+        states={
+            WAITING_FILTER_DAYS: [
+                CallbackQueryHandler(filter_choice_handler, pattern="^filter_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filter_days_received),
+            ],
+            WAITING_FILTER_BROADCAST: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filter_broadcast_send)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", broadcast_cancel)],
+    )
+
     application.add_handler(broadcast_conv)
+    application.add_handler(bonus_broadcast_conv)
+    application.add_handler(filter_broadcast_conv)
     application.add_handler(main_conv)
+
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("bonuslist", bonus_list))
+    application.add_handler(CommandHandler("sitebroadcast", site_broadcast))
 
     logger.info("Bot başlatıldı.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
