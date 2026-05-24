@@ -528,18 +528,24 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("📭 Henüz bonus alan kimse yok.")
         return
 
-    lines = [f"🎁 *BONUS ALAN KİŞİLER ({len(receivers)} kişi)*\n"]
+    def escape_html(text):
+        """HTML özel karakterlerini güvenli hale getir"""
+        if not text:
+            return ""
+        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    lines = [f"🎁 <b>BONUS ALAN KİŞİLER ({len(receivers)} kişi)</b>\n"]
     for i, info in enumerate(receivers, 1):
-        name = info.get("first_name") or "?"
-        tg_username = f"@{info['username']}" if info.get("username") else "(yok)"
-        site_username = info.get("site_username") or "(yok)"
+        name = escape_html(info.get("first_name") or "?")
+        tg_username = f"@{escape_html(info['username'])}" if info.get("username") else "(yok)"
+        site_username = escape_html(info.get("site_username") or "(yok)")
         date = (info.get("received_at") or "")[:10]
         uid = info.get("user_id", "")
         lines.append(
             f"{i}. {name}\n"
             f"   📱 TG: {tg_username}\n"
-            f"   🎮 Site: `{site_username}`\n"
-            f"   🆔 `{uid}` - {date}"
+            f"   🎮 Site: <code>{site_username}</code>\n"
+            f"   🆔 <code>{uid}</code> - {date}"
         )
 
     full_text = "\n\n".join(lines)
@@ -555,9 +561,9 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if current:
             chunks.append(current)
         for chunk in chunks:
-            await update.message.reply_text(chunk, parse_mode="Markdown")
+            await update.message.reply_text(chunk, parse_mode="HTML")
     else:
-        await update.message.reply_text(full_text, parse_mode="Markdown")
+        await update.message.reply_text(full_text, parse_mode="HTML")
 
 
 # ---------- /sendlogall: Tüm bonus alanları log grubuna gönder ----------
