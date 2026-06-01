@@ -1,6 +1,11 @@
 """
-Telegram Bot - Tam Sürüm (HTML formatlı, güvenli)
-==================================================
+Telegram Bot - 4 Butonlu + İki Bonus Dönemi
+=============================================
+Menu:
+- 🌐 Güncel Giriş
+- 📱 Telegram Adresi
+- 🎁 Telegram Bonusu
+- 💬 Telegram Destek (YENİ)
 """
 
 import asyncio
@@ -32,22 +37,31 @@ CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/kanalinizinkullanici
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "7961574063"))
 GUNCEL_GIRIS_LINK = os.environ.get("GUNCEL_GIRIS_LINK", "https://bwino.link/sosyal")
 TELEGRAM_ADRES_LINK = os.environ.get("TELEGRAM_ADRES_LINK", "https://t.me/bigwinososyal")
+# YENİ: Destek hesabı linki (env'den ayarlanabilir, varsayılan verildi)
+DESTEK_LINK = os.environ.get("DESTEK_LINK", "https://t.me/bigwinodestekresmi")
 
 LOG_CHAT_ID = os.environ.get("LOG_CHAT_ID", "")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
+ACTIVE_BONUS_TABLE = os.environ.get("ACTIVE_BONUS_TABLE", "bonus_receivers_v2")
+ARCHIVE_BONUS_TABLE = "bonus_receivers"
+
+BONUS_CODE = os.environ.get("BONUS_CODE", "winoTG06XXXX")
+
 PORT = int(os.environ.get("PORT", "10000"))
 
-BONUS_TEXT = (
-    "🎁 <b>TELEGRAM BONUSU</b> 🎁\n\n"
-    "Tebrikler! Bonus talebin alındı.\n\n"
-    "🎟️ <b>Bonus Kodu:</b> <code>winoTG05RDx6</code>\n\n"
-    "Bu kodu sitemizdeki bonus alanına girerek bonusunu talep edebilirsin.\n\n"
-    "Dikkat site kullanıcı adınızı doğru kaydetmeniz gerekmektedir. Detaylar için promosyon sayfasını incelemeyi unutmayın.\n\n"
-    "İyi şanslar! 🍀"
-)
+
+def get_bonus_text() -> str:
+    return (
+        "🎁 <b>TELEGRAM BONUSU</b> 🎁\n\n"
+        "Tebrikler! Bonus talebin alındı.\n\n"
+        f"🎟️ <b>Bonus Kodu:</b> <code>HZRNBWTG66</code>\n\n"
+        "Bu kodu sitemizdeki bonus alanına girerek bonusunu talep edebilirsin.\n\n"
+        "Dikkat site kullanıcı adınızı doğru kaydetmeniz gerekmektedir. Detaylar için promosyon sayfasını incelemeyi unutmayın.\n\n"
+        "İyi şanslar! 🍀"
+    )
 # =====================
 
 WAITING_BROADCAST = 1
@@ -55,6 +69,7 @@ WAITING_USERNAME = 2
 WAITING_BONUS_BROADCAST = 3
 WAITING_FILTER_DAYS = 4
 WAITING_FILTER_BROADCAST = 5
+WAITING_OLD_BONUS_BROADCAST = 6
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -72,7 +87,6 @@ if SUPABASE_URL and SUPABASE_KEY:
 
 
 def esc(text) -> str:
-    """HTML özel karakterlerini güvenli hale getir"""
     if text is None:
         return ""
     return html.escape(str(text))
@@ -107,14 +121,15 @@ def increment_click(button_name: str) -> None:
         logger.error(f"Click sayısı artırma hatası: {e}")
 
 
-def get_bonus_receiver(user_id: int) -> dict:
+def get_bonus_receiver(user_id: int, table: str = None) -> dict:
     if not supabase:
         return None
+    table = table or ACTIVE_BONUS_TABLE
     try:
-        result = supabase.table("bonus_receivers").select("*").eq("user_id", user_id).execute()
+        result = supabase.table(table).select("*").eq("user_id", user_id).execute()
         return result.data[0] if result.data else None
     except Exception as e:
-        logger.error(f"Bonus kaydı sorgulama hatası: {e}")
+        logger.error(f"Bonus kaydı sorgulama hatası ({table}): {e}")
         return None
 
 
@@ -122,7 +137,7 @@ def save_bonus(user, site_username: str) -> None:
     if not supabase:
         return
     try:
-        supabase.table("bonus_receivers").upsert({
+        supabase.table(ACTIVE_BONUS_TABLE).upsert({
             "user_id": user.id,
             "first_name": user.first_name or "",
             "username": user.username or "",
@@ -142,11 +157,12 @@ def get_total_users() -> int:
         return 0
 
 
-def get_total_bonus() -> int:
+def get_total_bonus(table: str = None) -> int:
     if not supabase:
         return 0
+    table = table or ACTIVE_BONUS_TABLE
     try:
-        result = supabase.table("bonus_receivers").select("user_id", count="exact").execute()
+        result = supabase.table(table).select("user_id", count="exact").execute()
         return result.count or 0
     except Exception:
         return 0
@@ -162,11 +178,12 @@ def get_button_clicks() -> dict:
         return {}
 
 
-def get_all_bonus_receivers() -> list:
+def get_all_bonus_receivers(table: str = None) -> list:
     if not supabase:
         return []
+    table = table or ACTIVE_BONUS_TABLE
     try:
-        result = supabase.table("bonus_receivers").select("*").order("received_at").execute()
+        result = supabase.table(table).select("*").order("received_at").execute()
         return result.data or []
     except Exception:
         return []
@@ -182,21 +199,23 @@ def get_all_user_ids() -> list:
         return []
 
 
-def get_bonus_user_ids() -> list:
+def get_bonus_user_ids(table: str = None) -> list:
     if not supabase:
         return []
+    table = table or ACTIVE_BONUS_TABLE
     try:
-        result = supabase.table("bonus_receivers").select("user_id").execute()
+        result = supabase.table(table).select("user_id").execute()
         return [row["user_id"] for row in (result.data or [])]
     except Exception:
         return []
 
 
-def find_user_by_site_username(site_username: str) -> dict:
+def find_user_by_site_username(site_username: str, table: str = None) -> dict:
     if not supabase:
         return None
+    table = table or ACTIVE_BONUS_TABLE
     try:
-        result = supabase.table("bonus_receivers").select("*").ilike("site_username", site_username).execute()
+        result = supabase.table(table).select("*").ilike("site_username", site_username).execute()
         return result.data[0] if result.data else None
     except Exception as e:
         logger.error(f"Site kullanıcı sorgulama hatası: {e}")
@@ -251,10 +270,12 @@ def is_valid_username(name: str) -> bool:
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Ana menü - 4 buton"""
     keyboard = [
         [InlineKeyboardButton("🌐 Güncel Giriş", url=GUNCEL_GIRIS_LINK)],
         [InlineKeyboardButton("📱 Telegram Adresi", url=TELEGRAM_ADRES_LINK)],
         [InlineKeyboardButton("🎁 Telegram Bonusu", callback_data="bonus")],
+        [InlineKeyboardButton("💬 Telegram Destek", url=DESTEK_LINK)],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -429,7 +450,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         existing = get_bonus_receiver(user.id)
         site_username = existing.get("site_username", "") if existing else ""
         await query.edit_message_text(
-            BONUS_TEXT + f"\n\n🎮 <b>Kayıtlı Site Kullanıcı Adın:</b> <code>{esc(site_username)}</code>",
+            get_bonus_text() + f"\n\n🎮 <b>Kayıtlı Site Kullanıcı Adın:</b> <code>{esc(site_username)}</code>",
             reply_markup=back_keyboard(),
             parse_mode="HTML",
         )
@@ -471,7 +492,7 @@ async def receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     save_bonus(user, site_username)
     await update.message.reply_text(
-        BONUS_TEXT + f"\n\n🎮 <b>Kayıtlı Site Kullanıcı Adın:</b> <code>{esc(site_username)}</code>",
+        get_bonus_text() + f"\n\n🎮 <b>Kayıtlı Site Kullanıcı Adın:</b> <code>{esc(site_username)}</code>",
         reply_markup=back_keyboard(),
         parse_mode="HTML",
     )
@@ -496,40 +517,46 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     total_users = get_total_users()
-    total_bonus = get_total_bonus()
+    total_bonus_active = get_total_bonus(ACTIVE_BONUS_TABLE)
+    total_bonus_old = get_total_bonus(ARCHIVE_BONUS_TABLE)
     clicks = get_button_clicks()
     log_status = "✅ Aktif" if LOG_CHAT_ID else "❌ Kapalı"
 
     text = (
         "🛠️ <b>YÖNETİCİ PANELİ</b>\n\n"
         f"👥 <b>Toplam Kullanıcı:</b> {total_users}\n"
-        f"🎁 <b>Bonus Alan:</b> {total_bonus}\n\n"
+        f"🎁 <b>YENİ Bonus Alan:</b> {total_bonus_active}\n"
+        f"📦 <b>ESKİ Bonus Alan:</b> {total_bonus_old}\n\n"
         f"📊 <b>Bonus Buton Tıklaması:</b> {clicks.get('bonus', 0)}\n"
-        f"📡 <b>Log Grubu:</b> {log_status}\n\n"
-        f"📋 <b>Komutlar:</b>\n"
-        f"/bonuslist - Bonus alanların listesi\n"
-        f"/sendlogall - Tüm bonus alanları log grubuna gönder\n\n"
-        f"📢 <b>Mesajlaşma:</b>\n"
+        f"📡 <b>Log Grubu:</b> {log_status}\n"
+        f"🎟️ <b>Aktif Bonus Kodu:</b> <code>{esc(BONUS_CODE)}</code>\n\n"
+        f"📋 <b>YENİ Kampanya Komutları:</b>\n"
+        f"/bonuslist - Yeni bonus alan listesi\n"
+        f"/bonusbroadcast - Yeni bonus alanlara mesaj\n"
+        f"/sendlogall - Yeni bonus alanları log grubuna gönder\n\n"
+        f"📦 <b>ESKİ Kampanya Komutları:</b>\n"
+        f"/bonuslist_old - Eski bonus alan listesi\n"
+        f"/bonusbroadcast_old - Eski bonus alanlara mesaj\n\n"
+        f"📢 <b>Genel Mesajlaşma:</b>\n"
         f"/broadcast - Tüm kullanıcılara mesaj\n"
-        f"/bonusbroadcast - Sadece bonus alanlara mesaj\n"
         f"/sitebroadcast - Belirli site adına özel mesaj\n"
         f"/filterbroadcast - Filtreli mesaj"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
 
-async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _bonus_list_impl(update, context, table: str, label: str) -> None:
     user = update.effective_user
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
         return
 
-    receivers = get_all_bonus_receivers()
+    receivers = get_all_bonus_receivers(table)
     if not receivers:
-        await update.message.reply_text("📭 Henüz bonus alan kimse yok.")
+        await update.message.reply_text(f"📭 {label} bonus alan kimse yok.")
         return
 
-    lines = [f"🎁 <b>BONUS ALAN KİŞİLER ({len(receivers)} kişi)</b>\n"]
+    lines = [f"🎁 <b>{label.upper()} BONUS ALAN KİŞİLER ({len(receivers)} kişi)</b>\n"]
     for i, info in enumerate(receivers, 1):
         name = esc(info.get("first_name") or "?")
         tg_username = f"@{esc(info['username'])}" if info.get("username") else "(yok)"
@@ -561,6 +588,14 @@ async def bonus_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(full_text, parse_mode="HTML")
 
 
+async def bonus_list(update, context) -> None:
+    await _bonus_list_impl(update, context, ACTIVE_BONUS_TABLE, "YENİ")
+
+
+async def bonus_list_old(update, context) -> None:
+    await _bonus_list_impl(update, context, ARCHIVE_BONUS_TABLE, "ESKİ")
+
+
 # ---------- /sendlogall ----------
 
 async def send_log_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -576,13 +611,13 @@ async def send_log_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    receivers = get_all_bonus_receivers()
+    receivers = get_all_bonus_receivers(ACTIVE_BONUS_TABLE)
     if not receivers:
         await update.message.reply_text("📭 Henüz bonus alan kimse yok.")
         return
 
     await update.message.reply_text(
-        f"⏳ {len(receivers)} bonus kaydı log grubuna gönderiliyor..."
+        f"⏳ {len(receivers)} yeni bonus kaydı log grubuna gönderiliyor..."
     )
 
     success = 0
@@ -649,10 +684,10 @@ async def bonus_broadcast_start(update, context) -> int:
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
         return ConversationHandler.END
-    total = len(get_bonus_user_ids())
+    total = len(get_bonus_user_ids(ACTIVE_BONUS_TABLE))
     await update.message.reply_text(
-        f"🎁 <b>Toplu Mesaj — BONUS ALANLAR</b> ({total} kişi)\n\n"
-        f"Bonus alan kişilere göndermek istediğin mesajı yaz.\n"
+        f"🎁 <b>Toplu Mesaj — YENİ BONUS ALANLAR</b> ({total} kişi)\n\n"
+        f"Yeni kampanyaya kayıt olanlara göndermek istediğin mesajı yaz.\n"
         f"İptal için /cancel yaz.",
         parse_mode="HTML",
     )
@@ -660,7 +695,30 @@ async def bonus_broadcast_start(update, context) -> int:
 
 
 async def bonus_broadcast_send(update, context) -> int:
-    user_ids = get_bonus_user_ids()
+    user_ids = get_bonus_user_ids(ACTIVE_BONUS_TABLE)
+    await send_broadcast(context, user_ids, update.message.text, update.message)
+    return ConversationHandler.END
+
+
+# ---------- /bonusbroadcast_old ----------
+
+async def bonus_broadcast_old_start(update, context) -> int:
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ Bu komut sadece yönetici içindir.")
+        return ConversationHandler.END
+    total = len(get_bonus_user_ids(ARCHIVE_BONUS_TABLE))
+    await update.message.reply_text(
+        f"📦 <b>Toplu Mesaj — ESKİ BONUS ALANLAR</b> ({total} kişi)\n\n"
+        f"Eski kampanyaya kayıt olanlara göndermek istediğin mesajı yaz.\n"
+        f"İptal için /cancel yaz.",
+        parse_mode="HTML",
+    )
+    return WAITING_OLD_BONUS_BROADCAST
+
+
+async def bonus_broadcast_old_send(update, context) -> int:
+    user_ids = get_bonus_user_ids(ARCHIVE_BONUS_TABLE)
     await send_broadcast(context, user_ids, update.message.text, update.message)
     return ConversationHandler.END
 
@@ -681,7 +739,8 @@ async def site_broadcast(update, context) -> None:
             "📝 <b>Kullanım:</b>\n"
             "<code>/sitebroadcast siteadi Mesaj metni buraya</code>\n\n"
             "<b>Örnek:</b>\n"
-            "<code>/sitebroadcast ahmet123 Bonusunuz onaylandı!</code>",
+            "<code>/sitebroadcast ahmet123 Bonusunuz onaylandı!</code>\n\n"
+            "<i>Önce yeni kampanyada arar, bulamazsa eski kampanyaya bakar.</i>",
             parse_mode="HTML",
         )
         return
@@ -689,7 +748,12 @@ async def site_broadcast(update, context) -> None:
     site_username = parts[1]
     message_text = parts[2]
 
-    record = find_user_by_site_username(site_username)
+    record = find_user_by_site_username(site_username, ACTIVE_BONUS_TABLE)
+    found_in = "Yeni"
+    if not record:
+        record = find_user_by_site_username(site_username, ARCHIVE_BONUS_TABLE)
+        found_in = "Eski"
+
     if not record:
         await update.message.reply_text(
             f"❌ <code>{esc(site_username)}</code> adında bir kullanıcı bulunamadı.",
@@ -703,7 +767,8 @@ async def site_broadcast(update, context) -> None:
             f"✅ Mesaj gönderildi!\n\n"
             f"👤 <b>Alıcı:</b> {esc(record.get('first_name', '?'))}\n"
             f"🎮 <b>Site Adı:</b> <code>{esc(site_username)}</code>\n"
-            f"🆔 <b>TG ID:</b> <code>{record['user_id']}</code>",
+            f"🆔 <b>TG ID:</b> <code>{record['user_id']}</code>\n"
+            f"📂 <b>Kayıt:</b> {found_in} kampanya",
             parse_mode="HTML",
         )
     except Exception as e:
@@ -854,6 +919,10 @@ def main() -> None:
     if not supabase:
         logger.warning("⚠️ Supabase bağlantısı yok! Veriler saklanamayacak.")
 
+    logger.info(f"Aktif bonus tablosu: {ACTIVE_BONUS_TABLE}")
+    logger.info(f"Aktif bonus kodu: {BONUS_CODE}")
+    logger.info(f"Destek linki: {DESTEK_LINK}")
+
     if LOG_CHAT_ID:
         logger.info(f"Log grubu/kanalı aktif: {LOG_CHAT_ID}")
     else:
@@ -890,6 +959,12 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", broadcast_cancel)],
     )
 
+    bonus_broadcast_old_conv = ConversationHandler(
+        entry_points=[CommandHandler("bonusbroadcast_old", bonus_broadcast_old_start)],
+        states={WAITING_OLD_BONUS_BROADCAST: [MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_broadcast_old_send)]},
+        fallbacks=[CommandHandler("cancel", broadcast_cancel)],
+    )
+
     filter_broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("filterbroadcast", filter_broadcast_start)],
         states={
@@ -904,11 +979,13 @@ def main() -> None:
 
     application.add_handler(broadcast_conv)
     application.add_handler(bonus_broadcast_conv)
+    application.add_handler(bonus_broadcast_old_conv)
     application.add_handler(filter_broadcast_conv)
     application.add_handler(main_conv)
 
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("bonuslist", bonus_list))
+    application.add_handler(CommandHandler("bonuslist_old", bonus_list_old))
     application.add_handler(CommandHandler("sendlogall", send_log_all))
     application.add_handler(CommandHandler("sitebroadcast", site_broadcast))
 
